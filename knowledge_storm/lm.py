@@ -714,3 +714,114 @@ class GoogleModel(dspy.dsp.modules.lm.LM):
             completions.append(response.parts[0].text)
 
         return completions
+
+import os
+import requests
+import backoff
+from typing import Optional, Any
+from dsp import ERRORS, backoff_hdlr, giveup_hdlr
+
+class GroqModel(dspy.dsp.modules.lm.LM):
+    """A wrapper class for Groq LLaMA 3.1 70B API."""
+
+    def __init__(
+            self,
+            model: str = "llama-3.1-70b-versatile",
+            api_key: Optional[str] = None,
+            **kwargs,
+    ):
+        super().__init__(model)
+        self.provider = "groq"
+        self.api_key = api_key = os.environ.get("GROQ_API_KEY") if api_key is None else api_key
+        self.api_base = f"https://api.groq.com/openai/v1/models/{model}/completions"
+        self.kwargs = {
+            "temperature": kwargs.get("temperature", 0.0),
+            "max_tokens": min(kwargs.get("max_tokens", 4096), 8192),  # Assuming 8192 is the max for this model
+            "top_p": kwargs.get("top_p", 1.0),
+            "n": kwargs.pop("n", kwargs.pop("num_generations", 1)),
+            **kwargs,
+        }
+        self.history: list[dict[str, Any]] = []
+        self.model = model
+
+        self._token_usage_lock = threading.Lock()
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+
+    def log_usage(self, response):
+        """Log the total tokens from the Groq API response."""
+        usage_data = response.get('usage')
+        if usage_data:
+            with self._token_usage_lock:
+                self.prompt_tokens += usage_data.get('prompt_tokens', 0)
+                self.completion_tokens += usage_data.get('completion_tokens', 0)
+
+    def get_usage_and_reset(self):
+        """Get the total tokens used and reset the token usage."""
+        usage = {
+            self.model:
+                {'prompt_tokens': self.prompt_tokens, 'completion_tokens': self.completion_tokens}
+        }
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        return usage
+
+    def basic_request(self, prompt: str, **kwargs):
+        raw_kwargs = kwargs
+        kwargs = {**self.kwargs, **kwargs}
+        headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'prompt': prompt,
+            'max_tokens': kwargs.get('max_tokens', 100),
+            'temperature': kwargs.get('temperature', 0.0),
+            'top_p': kwargs.get('top_p', 1.0),
+        }
+        response = requests.post(self.api_base, headers=headers, json=data)
+        response.raise_for_status()
+        response_json = response.json()
+
+        self.log_usage(response_json)
+
+        json_serializable_history = {
+            "prompt": prompt,
+            "response": response_json,
+            "kwargs": kwargs,
+            "raw_kwargs": raw_kwargs,
+        }
+        self.history.append(json_serializable_history)
+        return response_json
+
+    @backoff.on_exception(
+        backoff.expo,
+        ERRORS,
+        max_time=1000,
+        max_tries=8,
+        on_backoff=backoff_hdlr,
+        giveup=giveup_hdlr,
+    )
+    def request(self, prompt: str, **kwargs):
+        """Handles retrieval of completions from Groq whilst handling API errors."""
+        return self.basic_request(prompt, **kwargs)
+
+    def __call__(self, prompt, only_completed=True, return_sorted=False, **kwargs):
+        """Retrieves completions from Groq.
+
+        Args:
+            prompt (str): prompt to send to Groq
+            only_completed (bool, optional): return only completed responses. Defaults to True.
+            return_sorted (bool, optional): sort the completion choices. Defaults to False.
+
+        Returns:
+            list[str]: list of completion choices
+        """
+        assert only_completed, "for now"
+        assert return_sorted is False, "for now"
+        n = kwargs.pop("n", 1)
+        completions = []
+        for _ in range(n):
+            response = self.request(prompt, **kwargs)
+            completions.append(response['choices'][0]['text'])
+        return completions
