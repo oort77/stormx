@@ -83,7 +83,9 @@ def main(args):
         # rm = SerperRM(serper_search_api_key=os.getenv('SERPER_API_KEY'), results=engine_args.results)
         rm = SerperRM(serper_search_api_key=os.getenv('SERPER_API_KEY'), query_params={"autocorrect": True, "num": 10, "page": 1})#, k=engine_args.search_top_k)
     elif args.retriever == 'searxng':
-        rm = SearXNGRM(searxng_api_url=args.searxng_api_url, searxng_api_key=os.getenv('SEARXNG_API_KEY'), k=engine_args.search_top_k)
+        # rm = SearXNGRM(searxng_api_url=args.searxng_api_url, searxng_api_key=os.getenv('SEARXNG_API_KEY'), k=engine_args.search_top_k)
+        rm = SearXNGRM(searxng_api_url=os.getenv('SEARXNG_API_URL'), searxng_api_key=os.getenv('SEARXNG_API_KEY'), k=engine_args.search_top_k)
+
 
     runner = STORMWikiRunner(engine_args, lm_configs, rm)
 
